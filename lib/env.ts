@@ -31,12 +31,6 @@ export const env = {
   get stateSecret() {
     return required('OAUTH_STATE_SECRET');
   },
-  get redisUrl() {
-    return required('UPSTASH_REDIS_REST_URL');
-  },
-  get redisToken() {
-    return required('UPSTASH_REDIS_REST_TOKEN');
-  },
   get graphVersion() {
     return process.env.INSTAGRAM_GRAPH_VERSION || 'v25.0';
   },

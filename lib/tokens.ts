@@ -1,8 +1,9 @@
-import { Redis } from '@upstash/redis';
-import { env, GRAPH_BASE } from './env';
+import { GRAPH_BASE } from './env';
+import { getStore } from './store';
 
 /**
- * Token persistence + automatic refresh.
+ * Token persistence + automatic refresh, over whichever Redis provider is
+ * configured (see ./store).
  *
  * Instagram long-lived tokens last 60 days and can be refreshed any time after
  * they are 24 hours old. We refresh proactively once fewer than 7 days remain,
@@ -22,15 +23,6 @@ export type StoredToken = {
   refreshedAt: number;
 };
 
-let client: Redis | null = null;
-
-function redis(): Redis {
-  if (!client) {
-    client = new Redis({ url: env.redisUrl, token: env.redisToken });
-  }
-  return client;
-}
-
 function key(account: string): string {
   return `${KEY_PREFIX}${account}`;
 }
@@ -39,16 +31,15 @@ export async function saveToken(
   token: StoredToken,
   account: string = DEFAULT_ACCOUNT,
 ): Promise<void> {
-  await redis().set(key(account), JSON.stringify(token));
+  await getStore().set(key(account), JSON.stringify(token));
 }
 
 export async function readToken(
   account: string = DEFAULT_ACCOUNT,
 ): Promise<StoredToken | null> {
-  const raw = await redis().get<string | StoredToken>(key(account));
+  const raw = await getStore().get(key(account));
   if (!raw) return null;
-  // Upstash may deserialise JSON for us depending on how it was written.
-  return typeof raw === 'string' ? (JSON.parse(raw) as StoredToken) : raw;
+  return JSON.parse(raw) as StoredToken;
 }
 
 /**
@@ -111,16 +102,17 @@ export async function getValidToken(
 export async function deleteToken(
   account: string = DEFAULT_ACCOUNT,
 ): Promise<void> {
-  await redis().del(key(account));
+  await getStore().del(key(account));
 }
 
 /** Finds the storage account whose stored token belongs to `userId`. */
 export async function findAccountByUserId(userId: string): Promise<string | null> {
-  const keys = await redis().keys(`${KEY_PREFIX}*`);
+  const store = getStore();
+  const keys = await store.keys(`${KEY_PREFIX}*`);
   for (const k of keys) {
-    const raw = await redis().get<string | StoredToken>(k);
+    const raw = await store.get(k);
     if (!raw) continue;
-    const token = typeof raw === 'string' ? (JSON.parse(raw) as StoredToken) : raw;
+    const token = JSON.parse(raw) as StoredToken;
     if (token.userId === userId) return k.slice(KEY_PREFIX.length);
   }
   return null;

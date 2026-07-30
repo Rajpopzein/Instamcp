@@ -22,7 +22,8 @@ A remote **MCP (Model Context Protocol) server for Instagram**, built on Next.js
 - **Shared-secret auth** on every method, compared in constant time over HMACs so neither the value nor its length leaks. Unauthenticated clients cannot even enumerate the tool list. Accepted as an `Authorization: Bearer` header or a `?key=` query parameter.
 - **No OAuth advertised.** The 401 deliberately omits `WWW-Authenticate`, because under the MCP auth spec that header sends clients into OAuth discovery and dynamic client registration — which this server does not implement.
 - **HMAC-signed OAuth `state`** with a 10-minute TTL — CSRF protection with no server-side session store.
-- **Automatic token refresh.** Long-lived tokens (60 days) are persisted in Upstash Redis and refreshed once fewer than 7 days remain, so a client that calls weekly never sees an expiry.
+- **Automatic token refresh.** Long-lived tokens (60 days) are persisted in Redis and refreshed once fewer than 7 days remain, so a client that calls weekly never sees an expiry.
+- **Provider-agnostic storage.** The token store accepts either an Upstash-style REST pair or a standard `REDIS_URL`, detected at runtime — so whatever the Vercel Marketplace injects just works, with no variable renaming.
 - **Meta compliance endpoints** for deauthorize and data deletion, both verifying the `signed_request` HMAC against the app secret before touching stored data.
 - **Publishing handles async transcoding.** `publish_media` creates the container, polls until it leaves `IN_PROGRESS`, then publishes — avoiding the "Media ID is not available" race. If transcoding outruns the polling window it returns the container ID for `get_publishing_status` to finish.
 
@@ -47,7 +48,20 @@ openssl rand -hex 32   # MCP_BEARER_SECRET
 openssl rand -hex 32   # OAUTH_STATE_SECRET
 ```
 
-Create an Upstash Redis database and copy its REST URL and token.
+Provision Redis and let it inject its own variables — Vercel dashboard → **Storage** → add a Redis product, or:
+
+```bash
+vercel install upstash
+```
+
+Any of these shapes is recognised, so you should not need to rename anything:
+
+| Style | Variables |
+| --- | --- |
+| REST | `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` |
+| REST | `KV_REST_API_URL` + `KV_REST_API_TOKEN` |
+| TCP | `REDIS_URL` |
+| TCP | `KV_URL` |
 
 ### 3. Run
 
