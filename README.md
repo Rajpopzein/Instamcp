@@ -90,6 +90,30 @@ Leave the connector's OAuth client ID and secret blank. Because the 401 carries 
 
 A URL-embedded secret is more exposed than a header — it reaches proxy logs, browser history and shell history. Treat it as rotatable: changing `MCP_BEARER_SECRET` and re-pointing the client is the whole revocation story.
 
+### If the custom connector still refuses to register
+
+Claude's *custom connector* flow attempts OAuth dynamic client registration against every remote server and fails with *"Couldn't register with … sign-in service"* regardless of what the server advertises — including servers that implement the full OAuth 2.1 spec correctly. See [claude-ai-mcp#457](https://github.com/anthropics/claude-ai-mcp/issues/457) and [#697](https://github.com/anthropics/claude-ai-mcp/issues/697). Implementing OAuth here would not help.
+
+Bypass the connector with a stdio bridge instead. In `claude_desktop_config.json` (`%APPDATA%\Claude\` on Windows, `~/Library/Application Support/Claude/` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "instagram": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://<your-deployment>/api/mcp?key=<MCP_BEARER_SECRET>"]
+    }
+  }
+}
+```
+
+Or for Claude Code:
+
+```bash
+claude mcp add --transport http instagram "https://<your-deployment>/api/mcp" \
+  --header "Authorization: Bearer <MCP_BEARER_SECRET>"
+```
+
 ## Deploy
 
 ```bash
