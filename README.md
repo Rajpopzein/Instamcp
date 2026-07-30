@@ -19,7 +19,8 @@ A remote **MCP (Model Context Protocol) server for Instagram**, built on Next.js
 ## Design notes
 
 - **Stateless streamable HTTP transport** via `mcp-handler` v2 — no session affinity, so it runs on serverless functions without sticky routing.
-- **Bearer-secret auth** on every method, compared in constant time over HMACs so neither the value nor its length leaks. Unauthenticated clients cannot even enumerate the tool list.
+- **Shared-secret auth** on every method, compared in constant time over HMACs so neither the value nor its length leaks. Unauthenticated clients cannot even enumerate the tool list. Accepted as an `Authorization: Bearer` header or a `?key=` query parameter.
+- **No OAuth advertised.** The 401 deliberately omits `WWW-Authenticate`, because under the MCP auth spec that header sends clients into OAuth discovery and dynamic client registration — which this server does not implement.
 - **HMAC-signed OAuth `state`** with a 10-minute TTL — CSRF protection with no server-side session store.
 - **Automatic token refresh.** Long-lived tokens (60 days) are persisted in Upstash Redis and refreshed once fewer than 7 days remain, so a client that calls weekly never sees an expiry.
 - **Meta compliance endpoints** for deauthorize and data deletion, both verifying the `signed_request` HMAC against the app secret before touching stored data.
@@ -61,6 +62,8 @@ Visit `/api/auth/instagram` in a browser, approve the Instagram prompt, and the 
 
 ### 5. Point a client at it
 
+For clients that support custom headers — the preferred path:
+
 ```json
 {
   "mcpServers": {
@@ -72,6 +75,20 @@ Visit `/api/auth/instagram` in a browser, approve the Instagram prompt, and the 
   }
 }
 ```
+
+### Clients that only accept a URL
+
+Some clients — including Claude's **custom connector** UI — offer no field for a static bearer token or custom header. Their only authentication path is OAuth 2.1 with dynamic client registration, so pointing one at a header-authenticated server fails with *"Couldn't register with … sign-in service."*
+
+For those, put the secret in the URL:
+
+```
+https://<your-deployment>/api/mcp?key=<MCP_BEARER_SECRET>
+```
+
+Leave the connector's OAuth client ID and secret blank. Because the 401 carries no `WWW-Authenticate` header, the client will not attempt OAuth discovery.
+
+A URL-embedded secret is more exposed than a header — it reaches proxy logs, browser history and shell history. Treat it as rotatable: changing `MCP_BEARER_SECRET` and re-pointing the client is the whole revocation story.
 
 ## Deploy
 

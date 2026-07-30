@@ -1,34 +1,64 @@
 import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
 import { env } from './env';
 
-/**
- * Constant-time bearer token check.
- *
- * Compares HMACs rather than the raw strings so that differing lengths do not
- * leak through `timingSafeEqual`'s length precondition.
- */
-export function verifyBearer(request: Request): boolean {
-  const header = request.headers.get('authorization');
-  if (!header?.startsWith('Bearer ')) return false;
-
-  const presented = header.slice('Bearer '.length).trim();
+/** Constant-time comparison of a presented secret against the configured one. */
+function matchesSecret(presented: string): boolean {
   if (!presented) return false;
 
+  // HMAC both sides first: `timingSafeEqual` throws on length mismatch, so
+  // comparing digests keeps the secret's length from leaking too.
   const key = Buffer.from('instamcp-bearer');
   const a = createHmac('sha256', key).update(presented).digest();
   const b = createHmac('sha256', key).update(env.bearerSecret).digest();
   return timingSafeEqual(a, b);
 }
 
+/**
+ * Accepts the shared secret from either an `Authorization: Bearer` header or a
+ * `?key=` query parameter.
+ *
+ * The query parameter exists because some MCP clients — Claude's custom
+ * connector among them — expose only a URL field, with no way to set a static
+ * bearer token or custom header. Their only auth path is OAuth 2.1 with dynamic
+ * client registration, so a URL-embedded secret is the sole way to reach a
+ * header-authenticated server from those clients.
+ *
+ * Trade-off: URLs land in proxy and browser-history logs more readily than
+ * headers do. Prefer the header wherever the client supports it, and treat a
+ * URL-embedded secret as rotatable.
+ */
+export function verifyBearer(request: Request): boolean {
+  const header = request.headers.get('authorization');
+  if (header?.startsWith('Bearer ')) {
+    return matchesSecret(header.slice('Bearer '.length).trim());
+  }
+
+  const key = new URL(request.url).searchParams.get('key');
+  if (key) return matchesSecret(key.trim());
+
+  return false;
+}
+
+/**
+ * Deliberately omits `WWW-Authenticate`.
+ *
+ * Under the MCP authorization spec a 401 carrying `WWW-Authenticate: Bearer`
+ * tells the client to begin OAuth discovery — fetch protected-resource
+ * metadata, then attempt dynamic client registration. This server uses a static
+ * shared secret and publishes no OAuth metadata, so advertising the challenge
+ * only sends clients down a path that dead-ends in a registration failure
+ * ("Couldn't register with … sign-in service").
+ */
 export function unauthorized(): Response {
   return new Response(
-    JSON.stringify({ error: 'unauthorized', message: 'Invalid or missing bearer token.' }),
+    JSON.stringify({
+      error: 'unauthorized',
+      message:
+        'Invalid or missing shared secret. Send Authorization: Bearer <MCP_BEARER_SECRET>, or append ?key=<MCP_BEARER_SECRET> to the URL. This server does not use OAuth.',
+    }),
     {
       status: 401,
-      headers: {
-        'content-type': 'application/json',
-        'www-authenticate': 'Bearer realm="instamcp"',
-      },
+      headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
     },
   );
 }
