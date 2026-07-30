@@ -28,6 +28,116 @@ type GraphError = {
   };
 };
 
+/* -------------------------------------------------------------------------- */
+/*                            Response sanitising                             */
+/* -------------------------------------------------------------------------- */
+
+const TOKEN_PARAMS = ['access_token', 'client_secret', 'appsecret_proof'];
+
+/**
+ * The API version Graph last reported serving, read off a paging URL.
+ * Null until a paginated call has run.
+ */
+let observedVersion: string | null = null;
+
+export function getObservedVersion(): string | null {
+  return observedVersion;
+}
+
+/** Replaces credential query parameters in a URL string with `[redacted]`. */
+function redactUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    let touched = false;
+    for (const name of TOKEN_PARAMS) {
+      if (url.searchParams.has(name)) {
+        // No brackets: `searchParams` percent-encodes them, which turns a
+        // readable marker into `%5Bredacted%5D`.
+        url.searchParams.set(name, 'redacted');
+        touched = true;
+      }
+    }
+    return touched ? url.toString() : value;
+  } catch {
+    return value;
+  }
+}
+
+/** Pulls a cursor value out of a Graph-generated paging URL. */
+function cursorFrom(url: string | undefined, name: 'after' | 'before'): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).searchParams.get(name) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type RawPaging = {
+  cursors?: { before?: string; after?: string };
+  next?: string;
+  previous?: string;
+};
+
+/**
+ * Rewrites a Graph `paging` object into cursors plus booleans.
+ *
+ * Graph returns `paging.next` and `paging.previous` as fully-formed URLs with
+ * the live access token in the query string. Returning those verbatim would put
+ * a working credential into model context and into any log that captures the
+ * tool result — so the URLs are dropped entirely and only the cursors survive.
+ * Callers paginate with the `after` argument, which is equivalent.
+ */
+function sanitisePaging(paging: RawPaging): Record<string, unknown> {
+  const after = paging.cursors?.after ?? cursorFrom(paging.next, 'after');
+  const before = paging.cursors?.before ?? cursorFrom(paging.previous, 'before');
+
+  return {
+    cursors: { ...(before ? { before } : {}), ...(after ? { after } : {}) },
+    has_next: Boolean(paging.next),
+    has_previous: Boolean(paging.previous),
+  };
+}
+
+/**
+ * Walks a Graph response and removes credentials before it reaches the client.
+ *
+ * Two passes matter: `paging` objects are rebuilt as cursors only, and any other
+ * string that happens to be a URL carrying a token parameter is redacted. The
+ * second pass is a backstop for fields we have not enumerated — Graph adds URLs
+ * to responses over time, and the default should be to strip rather than leak.
+ */
+export function sanitise(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.includes('access_token=') ||
+      value.includes('client_secret=') ||
+      value.includes('appsecret_proof=')
+      ? redactUrl(value)
+      : value;
+  }
+
+  if (Array.isArray(value)) return value.map(sanitise);
+
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (k === 'paging' && v && typeof v === 'object' && !Array.isArray(v)) {
+        out[k] = sanitisePaging(v as RawPaging);
+        continue;
+      }
+      // Never echo a raw token even if Graph returns one in a body.
+      if (k === 'access_token' || k === 'client_secret' || k === 'appsecret_proof') {
+        out[k] = '[redacted]';
+        continue;
+      }
+      out[k] = sanitise(v);
+    }
+    return out;
+  }
+
+  return value;
+}
+
 async function request<T>(
   method: 'GET' | 'POST' | 'DELETE',
   path: string,
@@ -40,17 +150,31 @@ async function request<T>(
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
   }
-  url.searchParams.set('access_token', token.accessToken);
 
-  const response = await fetch(url, { method, cache: 'no-store' });
+  // Bearer header rather than an `access_token` query parameter: keeps the
+  // credential out of the request URL, so it cannot surface in an error
+  // message, a stack trace, or an intermediary's access log.
+  const response = await fetch(url, {
+    method,
+    cache: 'no-store',
+    headers: { authorization: `Bearer ${token.accessToken}` },
+  });
   const text = await response.text();
+
+  // Graph stamps its own version into the paging URLs it generates. Capturing
+  // it before sanitising is the only way to observe which version actually
+  // served the call: Meta silently upgrades requests aimed at a version that is
+  // no longer available to the app, so the configured value can differ from the
+  // effective one with no error to signal it.
+  const stamped = /graph\.instagram\.com\/(v\d+\.\d+)\//.exec(text);
+  if (stamped) observedVersion = stamped[1];
 
   let body: unknown;
   try {
     body = text ? JSON.parse(text) : {};
   } catch {
     throw new InstagramApiError(
-      `Non-JSON response from Instagram (${response.status}): ${text.slice(0, 200)}`,
+      `Non-JSON response from Instagram (${response.status}): ${redactUrl(text.slice(0, 200))}`,
       response.status,
     );
   }
@@ -58,7 +182,7 @@ async function request<T>(
   if (!response.ok) {
     const err = (body as GraphError).error;
     throw new InstagramApiError(
-      err?.message ?? `Instagram request failed with ${response.status}`,
+      redactUrl(err?.message ?? `Instagram request failed with ${response.status}`),
       response.status,
       err?.code,
       err?.error_subcode,
@@ -66,7 +190,7 @@ async function request<T>(
     );
   }
 
-  return body as T;
+  return sanitise(body) as T;
 }
 
 /* -------------------------------------------------------------------------- */

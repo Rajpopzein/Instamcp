@@ -1,10 +1,10 @@
 # Instamcp
 
-A remote **MCP (Model Context Protocol) server for Instagram**, built on Next.js and the Instagram Graph API v25.0. Point any MCP client — Claude, an agent framework, your own tooling — at a single HTTPS endpoint and give it read/write access to an Instagram Business or Creator account.
+A remote **MCP (Model Context Protocol) server for Instagram**, built on Next.js and the Instagram Graph API (v26.0 by default, configurable). Point any MCP client — Claude, an agent framework, your own tooling — at a single HTTPS endpoint and give it read/write access to an Instagram Business or Creator account.
 
 ## What it does
 
-13 tools across six areas:
+14 tools across seven areas:
 
 | Area | Tools |
 | --- | --- |
@@ -15,6 +15,7 @@ A remote **MCP (Model Context Protocol) server for Instagram**, built on Next.js
 | Comments | `list_comments`, `reply_to_comment` |
 | Moderation | `moderate_comment`, `delete_comment` |
 | Publishing | `publish_media`, `get_publishing_status`, `get_publishing_limit` |
+| Diagnostics | `get_diagnostics` |
 
 ## Design notes
 
@@ -25,6 +26,7 @@ A remote **MCP (Model Context Protocol) server for Instagram**, built on Next.js
 - **Automatic token refresh.** Long-lived tokens (60 days) are persisted in Redis and refreshed once fewer than 7 days remain, so a client that calls weekly never sees an expiry. A refresh that fails degrades to the existing token rather than failing the call, since the token is typically still valid.
 - **Two ways in.** Either run the OAuth flow, or paste a generated token into `INSTAGRAM_ACCESS_TOKEN` and skip it. Stored tokens win, so the upgrade path needs no config change.
 - **Provider-agnostic storage.** The token store accepts either an Upstash-style REST pair or a standard `REDIS_URL`, detected at runtime — so whatever the Vercel Marketplace injects just works, with no variable renaming.
+- **Credentials never leave the server.** Graph returns `paging.next` and `paging.previous` as full URLs with the live access token in the query string. Those URLs are stripped and replaced with `cursors` plus `has_next`/`has_previous`, so no working credential reaches model context or any log capturing tool output. A recursive pass redacts token parameters from any other URL field as a backstop, and the token is sent as a `Bearer` header rather than a query parameter so it stays out of request URLs entirely.
 - **Meta compliance endpoints** for deauthorize and data deletion, both verifying the `signed_request` HMAC against the app secret before touching stored data.
 - **Publishing handles async transcoding.** `publish_media` creates the container, polls until it leaves `IN_PROGRESS`, then publishes — avoiding the "Media ID is not available" race. If transcoding outruns the polling window it returns the container ID for `get_publishing_status` to finish.
 
@@ -149,6 +151,10 @@ Set the same environment variables in the Vercel project, then update the Meta a
 
 Every tool takes an optional `account` key, and `/api/auth/instagram?account=<key>` stores a token under that key. Omit it to use `default`.
 
+## API version
+
+`INSTAGRAM_GRAPH_VERSION` defaults to `v26.0`. Meta silently upgrades requests aimed at a version it no longer serves to the app's default, with no error and no warning — so the effective version can differ from what you configured. `get_diagnostics` reports both, reading the version Graph stamps into its own paging URLs, so a mismatch is observable rather than something you have to infer.
+
 ## Notes and limits
 
 - Requires an Instagram **Business** or **Creator** account. Personal accounts cannot use these endpoints.
@@ -157,6 +163,7 @@ Every tool takes an optional `account` key, and `/api/auth/instagram?account=<ke
 - `get_audience_demographics` returns an empty result for accounts under 100 followers.
 - Account insights accept a maximum 30-day range per call.
 - `delete_comment` is irreversible and requires `confirm: true`.
+- Paginate with the `after` argument from `cursors.after`; the raw `next` URL is deliberately not returned.
 
 ## License
 

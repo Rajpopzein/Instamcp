@@ -1,8 +1,11 @@
 import { createMcpHandler } from 'mcp-handler';
 import { z } from 'zod';
 import { unauthorized, verifyBearer } from '@/lib/auth';
+import { env } from '@/lib/env';
 import { InstagramApiError } from '@/lib/instagram';
 import * as ig from '@/lib/instagram';
+import { storeKind } from '@/lib/store';
+import { readToken } from '@/lib/tokens';
 
 /**
  * Instamcp — remote MCP server for Instagram.
@@ -404,7 +407,33 @@ const handler = createMcpHandler((server) => {
     }),
   );
 
-  /* ------------------------------ 8. Quota ------------------------------ */
+  /* --------------------------- 8. Diagnostics --------------------------- */
+  server.registerTool(
+    'get_diagnostics',
+    {
+      title: 'Report server configuration',
+      description:
+        'Configuration the server is actually running with: the configured Graph API version versus the version Graph reports serving, which Redis provider style is active, and where the Instagram token came from. Reads no Instagram data. Use this when results look inconsistent with the documented API version.',
+      inputSchema: {},
+    },
+    guard(async () => {
+      const observed = ig.getObservedVersion();
+      return ok({
+        graph_version_configured: env.graphVersion,
+        graph_version_observed: observed,
+        graph_version_matches:
+          observed === null ? 'unknown (no paginated call yet)' : observed === env.graphVersion,
+        store: storeKind(),
+        token_source: (await readToken().catch(() => null))
+          ? 'redis'
+          : process.env.INSTAGRAM_ACCESS_TOKEN
+            ? 'INSTAGRAM_ACCESS_TOKEN'
+            : 'none',
+      });
+    }),
+  );
+
+  /* ------------------------------ 9. Quota ------------------------------ */
   server.registerTool(
     'get_publishing_limit',
     {

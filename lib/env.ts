@@ -32,7 +32,10 @@ export const env = {
     return required('OAUTH_STATE_SECRET');
   },
   get graphVersion() {
-    return process.env.INSTAGRAM_GRAPH_VERSION || 'v25.0';
+    // Note that Meta upgrades requests aimed at a version it no longer serves
+    // to the app's default, without erroring — so the effective version can be
+    // newer than this. `get_diagnostics` reports what Graph actually used.
+    return process.env.INSTAGRAM_GRAPH_VERSION || 'v26.0';
   },
 };
 
