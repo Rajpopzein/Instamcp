@@ -22,7 +22,8 @@ A remote **MCP (Model Context Protocol) server for Instagram**, built on Next.js
 - **Shared-secret auth** on every method, compared in constant time over HMACs so neither the value nor its length leaks. Unauthenticated clients cannot even enumerate the tool list. Accepted as an `Authorization: Bearer` header or a `?key=` query parameter.
 - **No OAuth advertised.** The 401 deliberately omits `WWW-Authenticate`, because under the MCP auth spec that header sends clients into OAuth discovery and dynamic client registration — which this server does not implement.
 - **HMAC-signed OAuth `state`** with a 10-minute TTL — CSRF protection with no server-side session store.
-- **Automatic token refresh.** Long-lived tokens (60 days) are persisted in Redis and refreshed once fewer than 7 days remain, so a client that calls weekly never sees an expiry.
+- **Automatic token refresh.** Long-lived tokens (60 days) are persisted in Redis and refreshed once fewer than 7 days remain, so a client that calls weekly never sees an expiry. A refresh that fails degrades to the existing token rather than failing the call, since the token is typically still valid.
+- **Two ways in.** Either run the OAuth flow, or paste a generated token into `INSTAGRAM_ACCESS_TOKEN` and skip it. Stored tokens win, so the upgrade path needs no config change.
 - **Provider-agnostic storage.** The token store accepts either an Upstash-style REST pair or a standard `REDIS_URL`, detected at runtime — so whatever the Vercel Marketplace injects just works, with no variable renaming.
 - **Meta compliance endpoints** for deauthorize and data deletion, both verifying the `signed_request` HMAC against the app secret before touching stored data.
 - **Publishing handles async transcoding.** `publish_media` creates the container, polls until it leaves `IN_PROGRESS`, then publishes — avoiding the "Media ID is not available" race. If transcoding outruns the polling window it returns the container ID for `get_publishing_status` to finish.
@@ -73,6 +74,14 @@ npm run dev
 ### 4. Connect an account
 
 Visit `/api/auth/instagram` in a browser, approve the Instagram prompt, and the long-lived token is stored automatically.
+
+**Or skip OAuth entirely.** Meta's Instagram API setup page has a **Generate token** button that hands you a 60-day long-lived token directly. Set it as `INSTAGRAM_ACCESS_TOKEN` and the server uses it — no OAuth round trip, no Meta redirect URI to register, and no Redis strictly required:
+
+```
+INSTAGRAM_ACCESS_TOKEN=IGAA...
+```
+
+A token in Redis always takes precedence, so completing OAuth later upgrades the deployment with no config change. With Redis configured the env token is persisted on first use and refreshes normally; without it, regenerate roughly every 60 days.
 
 ### 5. Point a client at it
 

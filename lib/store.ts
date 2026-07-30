@@ -47,7 +47,10 @@ function restStore(url: string, token: string): Store {
   // Imported lazily so a TCP-only deployment never loads this dependency.
   const load = async () => {
     const { Redis } = await import('@upstash/redis');
-    return new Redis({ url, token });
+    // Without this the client JSON-parses stored values on the way out, so a
+    // serialised token comes back as an object and breaks the string contract
+    // below. Keep the raw text and let callers do their own parsing.
+    return new Redis({ url, token, automaticDeserialization: false });
   };
 
   let client: Awaited<ReturnType<typeof load>> | null = null;
@@ -55,8 +58,10 @@ function restStore(url: string, token: string): Store {
 
   return {
     async get(key) {
-      const value = await (await redis()).get<string>(key);
-      return value ?? null;
+      const value = await (await redis()).get<unknown>(key);
+      if (value === null || value === undefined) return null;
+      // Belt and braces: tolerate a client that deserialises anyway.
+      return typeof value === 'string' ? value : JSON.stringify(value);
     },
     async set(key, value) {
       await (await redis()).set(key, value);
